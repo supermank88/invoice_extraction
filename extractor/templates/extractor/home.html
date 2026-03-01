@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>Invoice Extraction</title>
+    <style>
+        :root {
+            --bg: #0f1419;
+            --surface: #1a2332;
+            --surface-hover: #243044;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --text: #e7edf4;
+            --text-muted: #94a3b8;
+            --success: #22c55e;
+            --error: #ef4444;
+            --border: #334155;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            color: var(--text);
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+        .files-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .files-card h2 {
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            color: var(--text-muted);
+        }
+        .pdf-list {
+            list-style: none;
+            max-height: 200px;
+            overflow-y: auto;
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .pdf-list li {
+            padding: 0.35rem 0;
+            color: var(--text);
+        }
+        .pdf-list li + li { border-top: 1px solid var(--border); }
+        .pdf-count {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+        }
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+            text-decoration: none;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .btn-success { background: var(--success); }
+        .btn-success:hover { background: #16a34a; }
+        .btn-group { margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+        .messages {
+            margin-bottom: 1.5rem;
+        }
+        .message {
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+        }
+        .message.error { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+        .message.success { background: rgba(34, 197, 94, 0.15); color: #86efac; }
+        .result-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 2rem;
+        }
+        .result-card h2 {
+            padding: 1rem 1.5rem;
+            font-size: 1rem;
+            background: var(--surface-hover);
+            border-bottom: 1px solid var(--border);
+            color: var(--text-muted);
+        }
+        .table-wrap {
+            overflow-x: auto;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: var(--surface-hover);
+            color: var(--text-muted);
+            font-weight: 500;
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        td {
+            color: var(--text);
+        }
+        tr:hover td { background: var(--surface-hover); }
+        .value-empty { color: var(--text-muted); font-style: italic; }
+        .empty-state {
+            color: var(--text-muted);
+            padding: 2rem;
+            text-align: center;
+        }
+        .file-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        @media (max-width: 768px) { .file-lists { grid-template-columns: 1fr; } }
+        .file-list-section h3 { font-size: 0.9rem; margin-bottom: 0.5rem; color: var(--text-muted); }
+        .file-list-section .pdf-list { max-height: 160px; }
+        .file-list-section li.processed { color: var(--success); }
+        .file-list-section li.to-process { color: var(--text); }
+        .progress-area {
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem 0;
+            font-size: 0.875rem;
+            min-height: 2.5rem;
+        }
+        .progress-area:empty { display: none; }
+        .progress-area.active { border: 1px solid var(--accent); }
+        .progress-text { color: var(--accent); }
+        .progress-error { color: var(--error); margin-top: 0.5rem; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-secondary { background: var(--surface-hover); }
+        .btn-secondary:hover { background: #2d3a4d; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Invoice Extraction</h1>
+            <p class="subtitle">Batch process all PDF invoices from the data folder</p>
+        </header>
+
+        {% if messages %}
+        <div class="messages">
+            {% for message in messages %}
+            <div class="message {{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="files-card">
+            <h2>Invoice PDFs (data folder)</h2>
+            {% if pdf_files %}
+            <div class="file-lists">
+                <div class="file-list-section">
+                    <h3>To process</h3>
+                    <ul class="pdf-list" id="to-process-list">
+                        {% for pdf in pdf_files %}
+                        <li class="{% if pdf.name in processed %}processed{% else %}to-process{% endif %}">{{ pdf.name }}{% if pdf.name in processed %} ✓{% endif %}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <div class="file-list-section">
+                    <h3>Already processed</h3>
+                    <ul class="pdf-list" id="processed-list">
+                        {% for name, when in processed.items %}
+                        <li class="processed">{{ name }}</li>
+                        {% empty %}
+                        <li style="color: var(--text-muted); font-style: italic;">None yet</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+            <div class="progress-area" id="progress-area" aria-live="polite"></div>
+            <div class="btn-group">
+                <button type="button" class="btn" id="btn-extract-new">Extract New Only</button>
+                <button type="button" class="btn" id="btn-extract-all">Extract All</button>
+                <button type="button" class="btn btn-secondary" id="btn-clear">Clear Processed List</button>
+            </div>
+            {% else %}
+            <p class="empty-state">No PDF files found in the data folder. Add invoices to <code>data/</code> and refresh.</p>
+            {% endif %}
+        </div>
+
+        <div class="result-card" id="result-card" style="display: {% if result_rows_list %}block{% else %}none{% endif %};">
+            <h2>Extracted Data (<span id="result-count">{{ result_rows_list|length }}</span> invoice(s))</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            {% for col in columns %}
+                            <th>{{ col }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody id="result-tbody">
+                        {% for result_rows in result_rows_list %}
+                        <tr>
+                            {% for col, val in result_rows %}
+                            <td class="{% if not val %}value-empty{% endif %}">{{ val|default:"—" }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border);">
+                <a href="{% url 'download_excel' %}" class="btn btn-success" id="btn-download">Download Excel</a>
+            </div>
+        </div>
+    </div>
+
+    {{ pdf_files|json_script:"pdf-files-data" }}
+    {{ processed|json_script:"processed-data" }}
+    {{ columns|json_script:"columns-data" }}
+    <script>
+    (function() {
+        const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+        const pdfFiles = JSON.parse(document.getElementById('pdf-files-data')?.textContent || '[]');
+        const processed = JSON.parse(document.getElementById('processed-data')?.textContent || '{}');
+        const columns = JSON.parse(document.getElementById('columns-data')?.textContent || '[]');
+
+        const toProcessList = document.getElementById('to-process-list');
+        const processedList = document.getElementById('processed-list');
+        const progressArea = document.getElementById('progress-area');
+        const resultCard = document.getElementById('result-card');
+        const resultCount = document.getElementById('result-count');
+        const resultTbody = document.getElementById('result-tbody');
+        const btnExtractNew = document.getElementById('btn-extract-new');
+        const btnExtractAll = document.getElementById('btn-extract-all');
+        const btnClear = document.getElementById('btn-clear');
+
+        if (!pdfFiles?.length) return;
+
+        function setProgress(msg, isError) {
+            progressArea.textContent = '';
+            progressArea.classList.toggle('active', !!msg);
+            if (msg) {
+                const p = document.createElement('span');
+                p.className = isError ? 'progress-error' : 'progress-text';
+                p.textContent = msg;
+                progressArea.appendChild(p);
+            }
+        }
+
+        function addResultRow(rowData) {
+            const tr = document.createElement('tr');
+            for (const col of columns) {
+                const td = document.createElement('td');
+                const val = rowData.find(([c]) => c === col)?.[1];
+                td.textContent = val || '—';
+                if (!val) td.className = 'value-empty';
+                tr.appendChild(td);
+            }
+            resultTbody.appendChild(tr);
+            resultCount.textContent = resultTbody.rows.length;
+            resultCard.style.display = 'block';
+        }
+
+        async function extractOne(filename) {
+            const r = await fetch('{% url "extract_one" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': CSRF,
+                },
+                body: JSON.stringify({ filename }),
+            });
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.error || 'Extraction failed');
+            return data;
+        }
+
+        async function runExtraction(processAll) {
+            const toProcess = processAll
+                ? pdfFiles.map(p => p.name)
+                : pdfFiles.filter(p => !processed[p.name]).map(p => p.name);
+
+            if (!toProcess.length) {
+                setProgress(processAll ? 'No PDFs to process.' : 'All files already processed. Use Extract All to reprocess.', false);
+                return;
+            }
+
+            btnExtractNew.disabled = true;
+            btnExtractAll.disabled = true;
+            btnClear.disabled = true;
+
+            const dataForExcel = [];
+            let done = 0, failed = 0;
+
+            for (const name of toProcess) {
+                setProgress(`Processing ${done + 1}/${toProcess.length}: ${name}`);
+                try {
+                    const res = await extractOne(name);
+                    addResultRow(res.data);
+                    dataForExcel.push(res.data_dict);
+                    processed[name] = new Date().toISOString();
+                } catch (err) {
+                    failed++;
+                    setProgress(`Processing ${done + 1}/${toProcess.length}: ${name} — Error: ${err.message}`, true);
+                }
+                done++;
+            }
+
+            setProgress(`Done. Extracted ${done - failed} invoice(s)${failed ? `, ${failed} failed` : ''}.`, false);
+
+            if (dataForExcel.length) {
+                try {
+                    const r = await fetch('{% url "generate_excel" %}', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': CSRF,
+                        },
+                        body: JSON.stringify({}),
+                    });
+                    const res = await r.json();
+                    if (res.success) {
+                        document.getElementById('btn-download').href = res.download_url;
+                    }
+                } catch (_) {}
+            }
+
+            btnExtractNew.disabled = false;
+            btnExtractAll.disabled = false;
+            btnClear.disabled = false;
+
+            for (const name of toProcess) {
+                if (processed[name]) {
+                    processed[name] = true;
+                }
+            }
+            updateProcessedList();
+        }
+
+        function updateProcessedList() {
+            const names = Object.keys(processed);
+            processedList.innerHTML = names.length
+                ? names.map(n => '<li class="processed">' + n + '</li>').join('')
+                : '<li style="color: var(--text-muted); font-style: italic;">None yet</li>';
+            toProcessList.querySelectorAll('li').forEach(li => {
+                const name = li.textContent.replace(/\s*✓$/, '');
+                li.className = processed[name] ? 'processed' : 'to-process';
+                if (processed[name] && !li.textContent.includes('✓')) li.textContent = name + ' ✓';
+            });
+        }
+
+        async function clearProcessed() {
+            if (!confirm('Clear the processed list? You can reprocess all files with Extract All.')) return;
+            await fetch('{% url "clear_processed" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': CSRF, 'Content-Type': 'application/json' },
+            });
+            location.reload();
+        }
+
+        if (btnExtractNew) btnExtractNew.addEventListener('click', () => runExtraction(false));
+        if (btnExtractAll) btnExtractAll.addEventListener('click', () => runExtraction(true));
+        if (btnClear) btnClear.addEventListener('click', clearProcessed);
+    })();
+    </script>
+</body>
+</html>
