@@ -9,3 +9,7 @@ processed_files.json
 extracted_results.json
 data
 data_processed
+*.zip
+invoices_extracted.xlsx
+invoices_validated.xlsx
+*_validated.xlsx
