@@ -121,6 +121,23 @@
             border-bottom: 1px solid var(--border);
             color: var(--text-muted);
         }
+        .invalid-card { border-left: 4px solid var(--error); }
+        .invalid-desc {
+            padding: 0 1.5rem 1rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+        .invalid-actions {
+            padding: 0 1.5rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .advanced-progress {
+            font-size: 0.875rem;
+            color: var(--accent);
+        }
+        .advanced-progress.error { color: var(--error); }
         .table-wrap {
             overflow-x: auto;
             max-height: 60vh;
@@ -150,6 +167,8 @@
         }
         tr:hover td { background: var(--surface-hover); }
         .value-empty { color: var(--text-muted); font-style: italic; }
+        .validate-yes { color: var(--success); font-weight: 500; }
+        .validate-no { color: var(--error); font-weight: 500; }
         .empty-state {
             color: var(--text-muted);
             padding: 2rem;
@@ -242,7 +261,7 @@
                         {% for result_rows in result_rows_list %}
                         <tr>
                             {% for col, val in result_rows %}
-                            <td class="{% if not val %}value-empty{% endif %}">{{ val|default:"—" }}</td>
+                            <td class="{% if col == 'Validate' and val == 'Yes' %}validate-yes{% elif col == 'Validate' and val == 'No' %}validate-no{% elif not val %}value-empty{% endif %}">{{ val|default:"—" }}</td>
                             {% endfor %}
                         </tr>
                         {% endfor %}
@@ -253,11 +272,41 @@
                 <a href="{% url 'download_excel' %}" class="btn btn-success" id="btn-download">Download Excel</a>
             </div>
         </div>
+
+        <div class="result-card invalid-card" id="invalid-card" style="display: {% if invalid_data_list %}block{% else %}none{% endif %};">
+            <h2>Invalid Invoices (<span id="invalid-count">{{ invalid_data_list|length }}</span> invoice(s))</h2>
+            <p class="invalid-desc">Invoices where Subtotal does not match Actual Subtotal (sum of line items).</p>
+            <div class="invalid-actions">
+                <button type="button" class="btn" id="btn-advanced-analysis">Advanced Analysis</button>
+                <span class="advanced-progress" id="advanced-progress" aria-live="polite"></span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            {% for col in columns %}
+                            <th>{{ col }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody id="invalid-tbody">
+                        {% for item in invalid_data_list %}
+                        <tr data-filename="{{ item.filename }}">
+                            {% for col, val in item.row %}
+                            <td class="{% if col == 'Validate' and val == 'No' %}validate-no{% elif not val %}value-empty{% endif %}">{{ val|default:"—" }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     {{ pdf_files|json_script:"pdf-files-data" }}
     {{ processed|json_script:"processed-data" }}
     {{ columns|json_script:"columns-data" }}
+    {{ invalid_data_list|json_script:"invalid-data" }}
     <script>
     (function() {
         const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -271,11 +320,17 @@
         const resultCard = document.getElementById('result-card');
         const resultCount = document.getElementById('result-count');
         const resultTbody = document.getElementById('result-tbody');
+        const invalidCard = document.getElementById('invalid-card');
+        const invalidCount = document.getElementById('invalid-count');
+        const invalidTbody = document.getElementById('invalid-tbody');
         const btnExtractNew = document.getElementById('btn-extract-new');
         const btnExtractAll = document.getElementById('btn-extract-all');
         const btnClear = document.getElementById('btn-clear');
+        const btnAdvancedAnalysis = document.getElementById('btn-advanced-analysis');
+        const advancedProgress = document.getElementById('advanced-progress');
 
-        if (!pdfFiles?.length) return;
+        const hasPdfFiles = pdfFiles?.length > 0;
+        const invalidDataList = JSON.parse(document.getElementById('invalid-data')?.textContent || '[]');
 
         function setProgress(msg, isError) {
             progressArea.textContent = '';
@@ -294,12 +349,49 @@
                 const td = document.createElement('td');
                 const val = rowData.find(([c]) => c === col)?.[1];
                 td.textContent = val || '—';
-                if (!val) td.className = 'value-empty';
+                if (col === 'Validate' && val === 'Yes') td.className = 'validate-yes';
+                else if (col === 'Validate' && val === 'No') td.className = 'validate-no';
+                else if (!val) td.className = 'value-empty';
                 tr.appendChild(td);
             }
             resultTbody.appendChild(tr);
             resultCount.textContent = resultTbody.rows.length;
             resultCard.style.display = 'block';
+        }
+
+        function addInvalidRow(rowData, filename) {
+            const tr = document.createElement('tr');
+            if (filename) tr.dataset.filename = filename;
+            for (const col of columns) {
+                const td = document.createElement('td');
+                const val = rowData.find(([c]) => c === col)?.[1];
+                td.textContent = val || '—';
+                if (col === 'Validate' && val === 'No') td.className = 'validate-no';
+                else if (!val) td.className = 'value-empty';
+                tr.appendChild(td);
+            }
+            invalidTbody.appendChild(tr);
+            invalidCount.textContent = invalidTbody.rows.length;
+            invalidCard.style.display = 'block';
+        }
+
+        function replaceInvalidRowContent(filename, rowData) {
+            const tr = Array.from(invalidTbody.rows).find(r => r.dataset.filename === filename);
+            if (!tr) return;
+            const tds = tr.querySelectorAll('td');
+            columns.forEach((col, i) => {
+                const val = rowData.find(([c]) => c === col)?.[1];
+                if (tds[i]) {
+                    tds[i].textContent = val || '—';
+                    tds[i].className = col === 'Validate' && val === 'No' ? 'validate-no' : (!val ? 'value-empty' : '');
+                }
+            });
+        }
+
+        function removeInvalidRow(filename) {
+            const tr = Array.from(invalidTbody.rows).find(r => r.dataset.filename === filename);
+            if (tr) tr.remove();
+            invalidCount.textContent = invalidTbody.rows.length;
         }
 
         async function extractOne(filename) {
@@ -317,6 +409,7 @@
         }
 
         async function runExtraction(processAll) {
+            if (!hasPdfFiles) return;
             const toProcess = processAll
                 ? pdfFiles.map(p => p.name)
                 : pdfFiles.filter(p => !processed[p.name]).map(p => p.name);
@@ -338,6 +431,8 @@
                 try {
                     const res = await extractOne(name);
                     addResultRow(res.data);
+                    const isInvalid = res.data.some(([c, v]) => c === 'Validate' && v === 'No');
+                    if (isInvalid) addInvalidRow(res.data, name);
                     dataForExcel.push(res.data_dict);
                     processed[name] = new Date().toISOString();
                 } catch (err) {
@@ -399,9 +494,57 @@
             location.reload();
         }
 
+        async function runAdvancedAnalysis() {
+            if (!btnAdvancedAnalysis || !advancedProgress) return;
+            if (!invalidDataList?.length) return;
+            btnAdvancedAnalysis.disabled = true;
+            advancedProgress.classList.remove('error');
+            const total = invalidDataList.length;
+            let done = 0;
+            let errors = [];
+            for (const item of invalidDataList) {
+                done++;
+                advancedProgress.textContent = `Processing ${done}/${total}: ${item.filename}`;
+                try {
+                    const r = await fetch('{% url "advanced_analysis_one" %}', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': CSRF,
+                        },
+                        body: JSON.stringify({ filename: item.filename }),
+                    });
+                    const res = await r.json();
+                    if (!r.ok) throw new Error(res.error || 'Advanced analysis failed');
+                    if (res.still_invalid) {
+                        replaceInvalidRowContent(item.filename, res.row);
+                    } else {
+                        removeInvalidRow(item.filename);
+                    }
+                } catch (err) {
+                    errors.push({ filename: item.filename, error: err.message });
+                    advancedProgress.textContent = `Processing ${done}/${total}: ${item.filename} — Error`;
+                    advancedProgress.classList.add('error');
+                }
+            }
+            if (errors.length) {
+                advancedProgress.textContent = `Done. ${total - errors.length} processed, ${errors.length} error(s): ${errors.map(e => e.filename + ': ' + e.error).join('; ')}`;
+                advancedProgress.classList.add('error');
+            } else {
+                advancedProgress.textContent = `Done. ${total} invoice(s) reprocessed. ${invalidTbody.rows.length} still invalid.`;
+                advancedProgress.classList.remove('error');
+                if (invalidTbody.rows.length === 0) {
+                    invalidCard.style.display = 'none';
+                    location.reload();
+                }
+            }
+            btnAdvancedAnalysis.disabled = false;
+        }
+
         if (btnExtractNew) btnExtractNew.addEventListener('click', () => runExtraction(false));
         if (btnExtractAll) btnExtractAll.addEventListener('click', () => runExtraction(true));
         if (btnClear) btnClear.addEventListener('click', clearProcessed);
+        if (btnAdvancedAnalysis) btnAdvancedAnalysis.addEventListener('click', runAdvancedAnalysis);
     })();
     </script>
 </body>

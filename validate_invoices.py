@@ -16,7 +16,7 @@ SCHEMA_CSV = BASE_DIR / "schema_columns.csv"
 DEFAULT_INPUT = BASE_DIR / "invoices_extracted.xlsx"
 
 # Columns to exclude from Actual Subtotal calculation
-EXCLUDE_FROM_SUM = {"INV#", "Date", "Bill To", "Reference", "Subtotal"}
+EXCLUDE_FROM_SUM = {"INV#", "Date", "Bill To", "Reference", "Unmatched Items", "Subtotal"}
 
 
 def load_schema_columns() -> list[str]:
@@ -57,27 +57,27 @@ def main() -> int:
     header_row = list(ws.iter_rows(min_row=1, max_row=1, values_only=True))[0]
     col_index = {str(h): i + 1 for i, h in enumerate(header_row) if h is not None}
 
-    # Insert "Other" column before Subtotal
+    # Insert "Difference" column before Subtotal
     subtotal_col = col_index.get("Subtotal")
     if subtotal_col is None:
         print("Error: Subtotal column not found.")
         return 1
 
     ws.insert_cols(subtotal_col)
-    other_col = subtotal_col
+    difference_col = subtotal_col
     subtotal_col_read = subtotal_col + 1  # Subtotal shifted right
     actual_col = subtotal_col + 2
     validate_col = subtotal_col + 3
 
-    # Insert headers: Other, Actual Subtotal, Validate (Subtotal stays in place)
-    ws.cell(row=1, column=other_col, value="Other")
+    # Insert headers: Difference, Actual Subtotal, Validate (Subtotal stays in place)
+    ws.cell(row=1, column=difference_col, value="Difference")
     ws.cell(row=1, column=actual_col, value="Actual Subtotal")
     ws.cell(row=1, column=validate_col, value="Validate")
 
     # Style new headers like existing ones
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
-    for col in (other_col, actual_col, validate_col):
+    for col in (difference_col, actual_col, validate_col):
         ws.cell(row=1, column=col).fill = header_fill
         ws.cell(row=1, column=col).font = header_font
 
@@ -97,11 +97,11 @@ def main() -> int:
         subtotal_val = ws.cell(row=row_num, column=subtotal_col_read).value
         subtotal_float = safe_float(subtotal_val)
 
-        # Other = Subtotal - Fee sum (unclassified/misc amount)
-        other_val = round(subtotal_float - fee_sum, 2)
+        # Difference = Subtotal - Fee sum (unclassified/misc amount)
+        difference_val = round(subtotal_float - fee_sum, 2)
 
-        # Actual Subtotal = Fee sum + Other (includes Other)
-        actual_subtotal = fee_sum + other_val
+        # Actual Subtotal = Fee sum + Difference (includes Difference)
+        actual_subtotal = fee_sum + difference_val
 
         # Validate: Yes if Actual Subtotal equals Subtotal
         is_valid = abs(actual_subtotal - subtotal_float) < 0.01
@@ -109,7 +109,7 @@ def main() -> int:
         if is_valid:
             yes_count += 1
 
-        ws.cell(row=row_num, column=other_col, value=other_val)
+        ws.cell(row=row_num, column=difference_col, value=difference_val)
         ws.cell(row=row_num, column=actual_col, value=round(actual_subtotal, 2))
         ws.cell(row=row_num, column=validate_col, value=validate_str)
 
