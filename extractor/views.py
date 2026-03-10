@@ -83,6 +83,29 @@ def _parse_unmatched_items_to_columns(unmatched_text: str) -> dict:
 # Display columns for UI table = schema columns + validation columns
 DISPLAY_COLUMNS = list(EXCEL_SCHEMA_COLUMNS) + ["Actual Subtotal", "difference", "Validate"]
 
+# Excel export: never drop these columns even if all values are zero
+EXCEL_COLUMNS_ALWAYS_INCLUDE = {
+    "INV#", "Date", "Bill To", "Reference",
+    "Subtotal", "Actual Subtotal", "difference", "Validate",
+}
+
+
+def _drop_all_zero_columns(rows: list[dict], columns: list[str]) -> list[str]:
+    """Return only columns that are always included or have at least one non-zero value."""
+    if not rows:
+        return list(columns)
+    # Treat as zero if abs(value) < 0.01 (avoids keeping columns due to float noise or "0.00")
+    ZERO_EPSILON = 0.01
+    kept = []
+    for col in columns:
+        if col in EXCEL_COLUMNS_ALWAYS_INCLUDE:
+            kept.append(col)
+            continue
+        has_nonzero = any(abs(_safe_float(row.get(col))) >= ZERO_EPSILON for row in rows)
+        if has_nonzero:
+            kept.append(col)
+    return kept
+
 
 def _safe_float(val) -> float:
     """Convert value to float, return 0.0 on failure."""
@@ -276,6 +299,10 @@ def generate_excel(request):
             for col in dynamic_item_columns:
                 if not row.get(col):
                     row[col] = "0"
+
+        # Remove columns where every value is zero (keep key/validation columns)
+        export_columns = _drop_all_zero_columns(rows, export_columns)
+
         output_dir = tempfile.gettempdir()
         excel_path = os.path.join(output_dir, "invoices_extracted.xlsx")
         extracted_to_excel_batch(rows, excel_path, columns=export_columns)
@@ -444,6 +471,9 @@ def download_excel(request):
         for col in dynamic_item_columns:
             if not row.get(col):
                 row[col] = "0"
+
+    # Remove columns where every value is zero (keep key/validation columns)
+    export_columns = _drop_all_zero_columns(rows, export_columns)
 
     extracted_to_excel_batch(rows, excel_path, columns=export_columns)
 
