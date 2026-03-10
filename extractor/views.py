@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -20,9 +21,16 @@ from .services import (
 
 
 def _build_excel_row(data: dict) -> dict:
-    """Build full row dict with schema columns + Actual Subtotal, difference, Validate for Excel export."""
+    """
+    Build full row dict for Excel export.
+
+    Internally we keep the base schema (including aggregated Unmatched Items),
+    but for the Excel file we also add one column per unmatched item, where
+    the column name is the item description and the cell value is the amount.
+    """
     row = _json_to_excel_row(data)
     actual_str, difference_str, validate_str = _compute_validation(data)
+    row.update(_parse_unmatched_items_to_columns(row.get("Unmatched Items", "")))
     row["Actual Subtotal"] = actual_str
     row["difference"] = difference_str
     row["Validate"] = validate_str
@@ -31,7 +39,48 @@ def _build_excel_row(data: dict) -> dict:
 # Columns excluded from Actual Subtotal calculation
 EXCLUDE_FROM_SUM = {"INV#", "Date", "Bill To", "Reference", "Unmatched Items", "Subtotal"}
 
-# Display columns = schema columns + validation columns
+
+def _parse_unmatched_items_to_columns(unmatched_text: str) -> dict:
+    """
+    Parse aggregated Unmatched Items string into a mapping:
+    {<item name>: <item value>, ...}
+
+    Example source text:
+        "Misc Service Fee: 25.00; Handling Charge: 10.50"
+    becomes:
+        {"Misc Service Fee": "25.00", "Handling Charge": "10.50"}
+    """
+    columns: dict[str, str] = {}
+    if not unmatched_text:
+        return columns
+
+    parts = [p.strip() for p in str(unmatched_text).split(";") if p.strip()]
+    for part in parts:
+        if ":" in part:
+            name, val = part.split(":", 1)
+            name = name.strip()
+            raw_val = val.strip()
+        else:
+            # No ":" – whole part is treated as a name with missing value
+            name = part.strip()
+            raw_val = ""
+
+        if not name:
+            continue
+
+        # Skip names that are purely numeric (no alphabetic characters),
+        # so values like "0.0" or "50" do not become schema names.
+        if not re.search(r"[A-Za-z]", name):
+            continue
+
+        # Parse value to a number; default to 0 when missing/invalid
+        num_val = _safe_float(raw_val or 0)
+        columns[name] = str(num_val)
+
+    return columns
+
+
+# Display columns for UI table = schema columns + validation columns
 DISPLAY_COLUMNS = list(EXCEL_SCHEMA_COLUMNS) + ["Actual Subtotal", "difference", "Validate"]
 
 
@@ -188,10 +237,48 @@ def generate_excel(request):
         if not data_list:
             return JsonResponse({"error": "No data to export"}, status=400)
 
-        rows = [_build_excel_row(d) for d in data_list]
+        # Build rows and collect all dynamic unmatched item column names
+        rows = []
+        dynamic_item_columns: set[str] = set()
+        for d in data_list:
+            row = _build_excel_row(d)
+            rows.append(row)
+            dynamic_item_columns.update(
+                _parse_unmatched_items_to_columns(row.get("Unmatched Items", "")).keys()
+            )
+
+        # Base columns without aggregated unmatched fields
+        base_columns = [
+            c for c in EXCEL_SCHEMA_COLUMNS if c not in ("Unmatched Items", "Unmatched Items Value")
+        ]
+        # All base columns except Subtotal
+        base_columns_no_subtotal = [c for c in base_columns if c != "Subtotal"]
+        subtotal_column = ["Subtotal"] if "Subtotal" in base_columns else []
+
+        # Validation columns – these must be at the very end, after Subtotal
+        validation_columns = ["Actual Subtotal", "difference", "Validate"]
+
+        # Dynamic unmatched item columns appear before the final validation block
+        dynamic_columns_sorted = sorted(dynamic_item_columns)
+
+        # Final layout:
+        # [all base columns except Subtotal] + [dynamic unmatched columns] +
+        # [Subtotal, Actual Subtotal, difference, Validate]
+        export_columns = (
+            base_columns_no_subtotal
+            + dynamic_columns_sorted
+            + subtotal_column
+            + validation_columns
+        )
+
+        # For dynamic unmatched item columns, fill missing/empty values with "0"
+        for row in rows:
+            for col in dynamic_item_columns:
+                if not row.get(col):
+                    row[col] = "0"
         output_dir = tempfile.gettempdir()
         excel_path = os.path.join(output_dir, "invoices_extracted.xlsx")
-        extracted_to_excel_batch(rows, excel_path, columns=DISPLAY_COLUMNS)
+        extracted_to_excel_batch(rows, excel_path, columns=export_columns)
 
         request.session["last_excel_path"] = excel_path
         request.session["last_excel_filename"] = "invoices_extracted.xlsx"
@@ -326,8 +413,39 @@ def download_excel(request):
     data_list = [d for _, d in saved]
     output_dir = tempfile.gettempdir()
     excel_path = os.path.join(output_dir, "invoices_extracted.xlsx")
-    rows = [_build_excel_row(d) for d in data_list]
-    extracted_to_excel_batch(rows, excel_path, columns=DISPLAY_COLUMNS)
+
+    # Build rows and collect all dynamic unmatched item column names
+    rows = []
+    dynamic_item_columns: set[str] = set()
+    for d in data_list:
+        row = _build_excel_row(d)
+        rows.append(row)
+        dynamic_item_columns.update(
+            _parse_unmatched_items_to_columns(row.get("Unmatched Items", "")).keys()
+        )
+
+    base_columns = [
+        c for c in EXCEL_SCHEMA_COLUMNS if c not in ("Unmatched Items", "Unmatched Items Value")
+    ]
+    base_columns_no_subtotal = [c for c in base_columns if c != "Subtotal"]
+    subtotal_column = ["Subtotal"] if "Subtotal" in base_columns else []
+    validation_columns = ["Actual Subtotal", "difference", "Validate"]
+    dynamic_columns_sorted = sorted(dynamic_item_columns)
+
+    export_columns = (
+        base_columns_no_subtotal
+        + dynamic_columns_sorted
+        + subtotal_column
+        + validation_columns
+    )
+
+    # For dynamic unmatched item columns, fill missing/empty values with "0"
+    for row in rows:
+        for col in dynamic_item_columns:
+            if not row.get(col):
+                row[col] = "0"
+
+    extracted_to_excel_batch(rows, excel_path, columns=export_columns)
 
     request.session["last_excel_path"] = excel_path
     request.session["last_excel_filename"] = "invoices_extracted.xlsx"

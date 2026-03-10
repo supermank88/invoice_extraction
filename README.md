@@ -33,19 +33,34 @@ python manage.py runserver
 
 ## Schema
 
-The output follows the CSV/Excel schema from `schema_columns.csv`:
+The internal schema follows the CSV definition from `schema_columns.csv`:
 
 - **Header columns**: INV#, Date, Bill To, Reference
 - **Fee columns**: Customs Duties, Customs Clearance, ISF Filing Fee, EPA Clearance, TSCA, etc.
-- **Unmatched Items**: Line items that don't map to schema columns (format: "Description: Amount")
-- **Unmatched Items Value**: Sum of amounts from Unmatched Items
-- **Subtotal**: Total from invoice
+- **Unmatched Items**: Line items that don't map to schema columns (format: `"Description: Amount"`; multiple items separated by `"; "`).
+- **Unmatched Items Value**: Sum of amounts from Unmatched Items.
+- **Subtotal**: Total from invoice.
 - **Validation columns** (included in Excel and UI):
   - **Actual Subtotal**: Sum of all fee columns + Unmatched Items Value
   - **difference**: Subtotal − Actual Subtotal
   - **Validate**: Yes if Subtotal matches Actual Subtotal, No otherwise
 
-Full schema: `schema_columns.csv`
+Full internal schema: `schema_columns.csv`
+
+### Excel export schema
+
+The downloaded Excel file slightly reshapes the internal schema:
+
+- **UI/validation columns** at the end of the sheet (right-most columns):
+  - `Subtotal`
+  - `Actual Subtotal`
+  - `difference`
+  - `Validate`
+- **Dynamic unmatched item columns**:
+  - For each unmatched item `"Description: Amount"` the exporter creates a column named **`Description`**.
+  - The value in that column is the numeric **Amount** (or `0` if missing/invalid).
+  - Descriptions that are **purely numeric** (e.g. `"0.0"`, `"50"`) are ignored and do not become column names.
+- All other schema columns from `schema_columns.csv` (except `Unmatched Items` and `Unmatched Items Value`) appear before the dynamic unmatched item columns.
 
 ## Extraction Logic
 
